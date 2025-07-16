@@ -7,10 +7,16 @@ const { v4: uuidv4 } = require("uuid");
 const { alignAndMergeAudios } = require("./index.cjs");
 const { uploadRecordingToSupabase } = require("./uploadFile");
 const { updateRecording } = require("./db/queries.js");
-const options = {
-  key: fs.readFileSync("./my-app/certificates/localhost-key.pem"),
-  cert: fs.readFileSync("./my-app/certificates/localhost.pem"),
-};
+let options;
+try {
+  options = {
+    key: fs.readFileSync("./certificates/localhost-key.pem"),
+    cert: fs.readFileSync("./certificates/localhost.pem"),
+  };
+} catch (error) {
+  console.error("Error loading SSL certificates:", error);
+  process.exit(1);
+}
 const {
   roomQueries,
   recordingQueries,
@@ -28,31 +34,36 @@ const wss = new WebSocket.Server({
   },
 });
 
-// Store rooms and their participants
 const rooms = new Map();
-// Store active connections
 const connections = new Map();
-// Store room recordings
 const roomRecordings = new Map();
 
-// Create recordings directory if it doesn't exist
 const recordingsDir = path.join(__dirname, "recordings");
-if (!fs.existsSync(recordingsDir)) {
-  fs.mkdirSync(recordingsDir, { recursive: true });
+try {
+  if (!fs.existsSync(recordingsDir)) {
+    fs.mkdirSync(recordingsDir, { recursive: true });
+  }
+} catch (error) {
+  console.error("Error creating recordings directory:", error);
 }
 
 wss.on("connection", (ws) => {
   console.log("New client connected");
   const connectionId = Date.now().toString();
-  connections.set(connectionId, {
-    ws,
-    userName: null,
-    roomId: null,
-    name: null,
-    id: null,
-    imageUrl: null,
-    roomNumberId: null,
-  });
+  try {
+    connections.set(connectionId, {
+      ws,
+      userName: null,
+      roomId: null,
+      name: null,
+      id: null,
+      imageUrl: null,
+      roomNumberId: null,
+    });
+  } catch (error) {
+    console.error("Error setting up connection:", error);
+    return;
+  }
 
   ws.on("message", (message) => {
     try {
@@ -110,14 +121,12 @@ wss.on("connection", (ws) => {
               ),
             };
 
-            // Create directory for this room's recording
             if (!fs.existsSync(recording.recordingPath)) {
               fs.mkdirSync(recording.recordingPath, { recursive: true });
             }
 
             roomRecordings.set(data.roomId, recording);
 
-            // Notify all users in the room that recording has started
             const roomUsers = rooms.get(data.roomId) || [];
             roomUsers.forEach((user) => {
               const userWs = connections.get(user);
@@ -147,286 +156,352 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log("Client disconnected");
-    handleDisconnect(connectionId);
-    connections.delete(connectionId);
+    try {
+      handleDisconnect(connectionId);
+      connections.delete(connectionId);
+    } catch (error) {
+      console.error("Error handling disconnect:", error);
+    }
+  });
+
+  ws.on("error", (error) => {
+    console.error("WebSocket error:", error);
+    try {
+      handleDisconnect(connectionId);
+      connections.delete(connectionId);
+    } catch (cleanupError) {
+      console.error("Error cleaning up after WebSocket error:", cleanupError);
+    }
   });
 });
 
 function handleCreateRoom(ws, data, connectionId) {
-  const { roomId, userName, roomNumberId, name, imageUrl } = data;
+  try {
+    const { roomId, userName, roomNumberId, name, imageUrl } = data;
 
-  if (rooms.has(roomId)) {
-    const existingUsers = getUsersInRoom(roomId);
-    const isUserAlreadyInRoom = existingUsers.some(
-      (user) => user.userName === userName
-    );
-
-    if (isUserAlreadyInRoom) {
-      const users = getUsersInRoom(roomId);
-      ws.send(
-        JSON.stringify({
-          type: "room_created",
-          roomId,
-          message: `You are already in room ${roomId}`,
-          users: users,
-        })
+    if (rooms.has(roomId)) {
+      const existingUsers = getUsersInRoom(roomId);
+      const isUserAlreadyInRoom = existingUsers.some(
+        (user) => user.userName === userName
       );
-      return;
-    } else {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: "Room already exists",
-        })
-      );
-      return;
+
+      if (isUserAlreadyInRoom) {
+        const users = getUsersInRoom(roomId);
+        ws.send(
+          JSON.stringify({
+            type: "room_created",
+            roomId,
+            message: `You are already in room ${roomId}`,
+            users: users,
+          })
+        );
+        return;
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "Room already exists",
+          })
+        );
+        return;
+      }
     }
-  }
-  incrementCurrentParticipants(roomId);
-  const roomSet = new Set();
-  roomSet.add(connectionId);
-  rooms.set(roomId, roomSet);
+    incrementCurrentParticipants(roomId);
+    const roomSet = new Set();
+    roomSet.add(connectionId);
+    rooms.set(roomId, roomSet);
 
-  const connectionInfo = connections.get(connectionId);
-  connectionInfo.userName = userName;
-  connectionInfo.roomId = roomId;
-  connectionInfo.roomNumberId = roomNumberId;
-  connectionInfo.imageUrl = imageUrl;
-  connectionInfo.name = name;
+    const connectionInfo = connections.get(connectionId);
+    connectionInfo.userName = userName;
+    connectionInfo.roomId = roomId;
+    connectionInfo.roomNumberId = roomNumberId;
+    connectionInfo.imageUrl = imageUrl;
+    connectionInfo.name = name;
 
-  ws.userName = userName;
-  ws.roomId = roomId;
-  ws.connectionId = connectionId;
+    ws.userName = userName;
+    ws.roomId = roomId;
+    ws.connectionId = connectionId;
 
-  roomQueries.getRoomByRoomId(roomId).then((roomData) => {
-    if (roomData) {
-      roomDbIds.set(roomId, roomData.id);
-      console.log(`Room ${roomId} mapped to DB ID ${roomData.id}`);
-    }
-  });
-
-  const users = getUsersInRoom(roomId);
-
-  ws.send(
-    JSON.stringify({
-      type: "room_created",
-      roomId,
-      message: `Room ${roomId} created successfully`,
-      users: users,
-    })
-  );
-
-  console.log(`Room ${roomId} created by ${userName}`);
-}
-
-function handleJoinRoom(ws, data, connectionId) {
-  const { roomId, userName, roomNumberId, name, imageUrl } = data;
-
-  if (!rooms.has(roomId)) {
-    ws.send(
-      JSON.stringify({
-        type: "error",
-        message: "Room does not exist",
-      })
-    );
-    return;
-  }
-
-  const room = rooms.get(roomId);
-
-  if (room.has(connectionId)) {
-    const users = getUsersInRoom(roomId);
-    ws.send(
-      JSON.stringify({
-        type: "welcome",
-        roomId,
-        message: `You are already in room ${roomId}!`,
-        users: users,
-        timestamp: new Date().toISOString(),
-      })
-    );
-    return;
-  }
-
-  const existingUsers = getUsersInRoom(roomId);
-  const isUserInRoom = existingUsers.some((user) => user.userName === userName);
-
-  if (isUserInRoom) {
-    ws.send(
-      JSON.stringify({
-        type: "error",
-        message: "User already in room",
-      })
-    );
-    return;
-  }
-
-  room.add(connectionId);
-
-  const connectionInfo = connections.get(connectionId);
-  connectionInfo.userName = userName;
-  connectionInfo.roomId = roomId;
-  connectionInfo.roomNumberId = roomNumberId;
-  connectionInfo.imageUrl = imageUrl;
-  connectionInfo.name = name;
-  incrementCurrentParticipants(roomId);
-
-  ws.userName = userName;
-  ws.roomId = roomId;
-  ws.connectionId = connectionId;
-
-  if (!roomDbIds.has(roomId)) {
     roomQueries.getRoomByRoomId(roomId).then((roomData) => {
       if (roomData) {
         roomDbIds.set(roomId, roomData.id);
         console.log(`Room ${roomId} mapped to DB ID ${roomData.id}`);
       }
     });
+
+    const users = getUsersInRoom(roomId);
+
+    ws.send(
+      JSON.stringify({
+        type: "room_created",
+        roomId,
+        message: `Room ${roomId} created successfully`,
+        users: users,
+      })
+    );
+
+    console.log(`Room ${roomId} created by ${userName}`);
+  } catch (error) {
+    console.error("Error handling create room:", error);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Failed to create room",
+        })
+      );
+    } catch (sendError) {
+      console.error("Error sending create room error:", sendError);
+    }
   }
-
-  const users = getUsersInRoom(roomId);
-
-  broadcastToRoom(roomId, {
-    type: "user_joined",
-    userName,
-    message: `${userName} joined the room`,
-    users: users,
-    timestamp: new Date().toISOString(),
-  });
-
-  ws.send(
-    JSON.stringify({
-      type: "welcome",
-      roomId,
-      message: `Welcome to room ${roomId}!`,
-      users: users,
-      timestamp: new Date().toISOString(),
-    })
-  );
-
-  console.log(`${userName} joined room ${roomId}`);
 }
 
-async function handleLeaveRoom(ws, data) {
-  const { roomId, roomNumberId } = data;
-  const room = rooms.get(roomId); // Add this missing line
+function handleJoinRoom(ws, data, connectionId) {
+  try {
+    const { roomId, userName, roomNumberId, name, imageUrl } = data;
 
-  if (rooms.has(roomId) && ws.connectionId) {
-    room.delete(ws.connectionId);
+    if (!rooms.has(roomId)) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Room does not exist",
+        })
+      );
+      return;
+    }
 
-    const connectionInfo = connections.get(ws.connectionId);
-    if (connectionInfo) {
-      connectionInfo.roomId = null;
+    const room = rooms.get(roomId);
+
+    if (room.has(connectionId)) {
+      const users = getUsersInRoom(roomId);
+      ws.send(
+        JSON.stringify({
+          type: "welcome",
+          roomId,
+          message: `You are already in room ${roomId}!`,
+          users: users,
+          timestamp: new Date().toISOString(),
+        })
+      );
+      return;
+    }
+
+    const existingUsers = getUsersInRoom(roomId);
+    const isUserInRoom = existingUsers.some(
+      (user) => user.userName === userName
+    );
+
+    if (isUserInRoom) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "User already in room",
+        })
+      );
+      return;
+    }
+
+    room.add(connectionId);
+
+    const connectionInfo = connections.get(connectionId);
+    connectionInfo.userName = userName;
+    connectionInfo.roomId = roomId;
+    connectionInfo.roomNumberId = roomNumberId;
+    connectionInfo.imageUrl = imageUrl;
+    connectionInfo.name = name;
+    incrementCurrentParticipants(roomId);
+
+    ws.userName = userName;
+    ws.roomId = roomId;
+    ws.connectionId = connectionId;
+
+    if (!roomDbIds.has(roomId)) {
+      roomQueries.getRoomByRoomId(roomId).then((roomData) => {
+        if (roomData) {
+          roomDbIds.set(roomId, roomData.id);
+          console.log(`Room ${roomId} mapped to DB ID ${roomData.id}`);
+        }
+      });
     }
 
     const users = getUsersInRoom(roomId);
 
     broadcastToRoom(roomId, {
-      type: "user_left",
-      userName: ws.userName,
-      message: `${ws.userName} left the room`,
+      type: "user_joined",
+      userName,
+      message: `${userName} joined the room`,
       users: users,
       timestamp: new Date().toISOString(),
     });
 
-    decrementCurrentParticipants(roomId);
-    console.log("decrementing in Leave Room");
-    if (room.size === 0) {
-      await endRoomInDatabase(roomId);
-      rooms.delete(roomId);
+    ws.send(
+      JSON.stringify({
+        type: "welcome",
+        roomId,
+        message: `Welcome to room ${roomId}!`,
+        users: users,
+        timestamp: new Date().toISOString(),
+      })
+    );
 
-      // If there's an active recording for this room, finalize it
-      if (roomRecordings.has(roomId)) {
-        const recording = roomRecordings.get(roomId);
-        // Force stop recording and combine
-        setTimeout(async () => {
-          await combineRecordings(roomId, roomNumberId, recording);
-        }, 2000); // Give 2 seconds for any pending audio processing
-      }
-
-      console.log(`Room ${roomId} deleted (empty)`);
+    console.log(`${userName} joined room ${roomId}`);
+  } catch (error) {
+    console.error("Error handling join room:", error);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Failed to join room",
+        })
+      );
+    } catch (sendError) {
+      console.error("Error sending join room error:", sendError);
     }
   }
 }
 
-function handleMessage(ws, data) {
-  const { roomId, message, name } = data;
+async function handleLeaveRoom(ws, data) {
+  try {
+    const { roomId, roomNumberId } = data;
+    const room = rooms.get(roomId);
 
-  if (rooms.has(roomId)) {
-    broadcastToRoom(roomId, {
-      type: "message",
-      userName: ws.userName,
-      name: name,
-      message,
-      timestamp: new Date().toISOString(),
-    });
-  }
-}
-  
-function handleGetUsers(ws, data) {
-  const { roomId } = data;
+    if (rooms.has(roomId) && ws.connectionId) {
+      room.delete(ws.connectionId);
 
-  if (!rooms.has(roomId)) {
-    ws.send(
-      JSON.stringify({
-        type: "error",
-        message: "Room does not exist",
-      })
-    );
-    return;
-  }
-
-  const users = getUsersInRoom(roomId);
-  ws.send(
-    JSON.stringify({
-      type: "room_users",
-      roomId,
-      users,
-    })
-  );
-}
-
-async function handleDisconnect(connectionId) {
-  const connectionInfo = connections.get(connectionId);
-
-  if (connectionInfo && connectionInfo.roomId) {
-    const roomId = connectionInfo.roomId;
-    const roomNumberId = connectionInfo.roomNumberId;
-    const room = rooms.get(roomId); // Add this missing line
-
-    if (room) {
-      room.delete(connectionId);
+      const connectionInfo = connections.get(ws.connectionId);
+      if (connectionInfo) {
+        connectionInfo.roomId = null;
+      }
 
       const users = getUsersInRoom(roomId);
 
       broadcastToRoom(roomId, {
         type: "user_left",
-        userName: connectionInfo.userName,
-        message: `${connectionInfo.userName} left the room`,
+        userName: ws.userName,
+        message: `${ws.userName} left the room`,
         users: users,
         timestamp: new Date().toISOString(),
       });
 
       decrementCurrentParticipants(roomId);
-      console.log("decrementing in disconnect Room");
-
+      console.log("decrementing in Leave Room");
       if (room.size === 0) {
+        await endRoomInDatabase(roomId);
         rooms.delete(roomId);
 
-        await endRoomInDatabase(roomId);
-
-        // If there's an active recording for this room, finalize it
         if (roomRecordings.has(roomId)) {
           const recording = roomRecordings.get(roomId);
-          // Force stop recording and combine
           setTimeout(async () => {
             await combineRecordings(roomId, roomNumberId, recording);
-          }, 2000); // Give 2 seconds for any pending audio processing
+          }, 2000);
         }
 
         console.log(`Room ${roomId} deleted (empty)`);
       }
     }
+  } catch (error) {
+    console.error("Error handling leave room:", error);
+  }
+}
+
+function handleMessage(ws, data) {
+  try {
+    const { roomId, message, name } = data;
+
+    if (rooms.has(roomId)) {
+      broadcastToRoom(roomId, {
+        type: "message",
+        userName: ws.userName,
+        name: name,
+        message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  } catch (error) {
+    console.error("Error handling message:", error);
+  }
+}
+
+function handleGetUsers(ws, data) {
+  try {
+    const { roomId } = data;
+
+    if (!rooms.has(roomId)) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Room does not exist",
+        })
+      );
+      return;
+    }
+
+    const users = getUsersInRoom(roomId);
+    ws.send(
+      JSON.stringify({
+        type: "room_users",
+        roomId,
+        users,
+      })
+    );
+  } catch (error) {
+    console.error("Error handling get users:", error);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Failed to get users",
+        })
+      );
+    } catch (sendError) {
+      console.error("Error sending get users error:", sendError);
+    }
+  }
+}
+
+async function handleDisconnect(connectionId) {
+  try {
+    const connectionInfo = connections.get(connectionId);
+
+    if (connectionInfo && connectionInfo.roomId) {
+      const roomId = connectionInfo.roomId;
+      const roomNumberId = connectionInfo.roomNumberId;
+      const room = rooms.get(roomId);
+
+      if (room) {
+        room.delete(connectionId);
+
+        const users = getUsersInRoom(roomId);
+
+        broadcastToRoom(roomId, {
+          type: "user_left",
+          userName: connectionInfo.userName,
+          message: `${connectionInfo.userName} left the room`,
+          users: users,
+          timestamp: new Date().toISOString(),
+        });
+
+        decrementCurrentParticipants(roomId);
+        console.log("decrementing in disconnect Room");
+
+        if (room.size === 0) {
+          rooms.delete(roomId);
+
+          await endRoomInDatabase(roomId);
+
+          if (roomRecordings.has(roomId)) {
+            const recording = roomRecordings.get(roomId);
+            setTimeout(async () => {
+              await combineRecordings(roomId, roomNumberId, recording);
+            }, 2000);
+          }
+
+          console.log(`Room ${roomId} deleted (empty)`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error handling disconnect:", error);
   }
 }
 
@@ -440,13 +515,12 @@ async function endRoomInDatabase(roomId) {
         `✅ Room ${roomId} ended in database at ${endTime.toISOString()}`
       );
 
-      // Clean up the room DB ID cache
       roomDbIds.delete(roomId);
     } else {
-      console.log(`⚠️ Room ${roomId} not found in database or already ended`);
+      console.log(`Room ${roomId} not found in database or already ended`);
     }
   } catch (error) {
-    console.error(`❌ Error ending room ${roomId} in database:`, error);
+    console.error(`Error ending room ${roomId} in database:`, error);
   }
 }
 
@@ -457,655 +531,667 @@ function getUsersInRoom(roomId) {
 
   const room = rooms.get(roomId);
   const users = [];
-
-  room.forEach((connectionId) => {
-    const connectionInfo = connections.get(connectionId);
-    if (connectionInfo && connectionInfo.userName) {
-      users.push({
-        userName: connectionInfo.userName,
-        name: connectionInfo.name,
-        imageUrl: connectionInfo.imageUrl,
-        isConnected: true,
-      });
-    }
-  });
+  try {
+    room.forEach((connectionId) => {
+      const connectionInfo = connections.get(connectionId);
+      if (connectionInfo && connectionInfo.userName) {
+        users.push({
+          userName: connectionInfo.userName,
+          name: connectionInfo.name,
+          imageUrl: connectionInfo.imageUrl,
+          isConnected: true,
+        });
+      }
+    });
+  } catch (error) {
+    console.error(`Error getting the users:`, error);
+  }
 
   return users;
 }
 
 function broadcastToRoom(roomId, message) {
-  if (rooms.has(roomId)) {
-    const room = rooms.get(roomId);
-    const messageStr = JSON.stringify(message);
+  try {
+    if (rooms.has(roomId)) {
+      const room = rooms.get(roomId);
+      const messageStr = JSON.stringify(message);
 
-    room.forEach((connectionId) => {
-      const connectionInfo = connections.get(connectionId);
-      if (
-        connectionInfo &&
-        connectionInfo.ws &&
-        connectionInfo.ws.readyState === WebSocket.OPEN
-      ) {
-        connectionInfo.ws.send(messageStr);
-      }
-    });
+      room.forEach((connectionId) => {
+        const connectionInfo = connections.get(connectionId);
+        if (
+          connectionInfo &&
+          connectionInfo.ws &&
+          connectionInfo.ws.readyState === WebSocket.OPEN
+        ) {
+          connectionInfo.ws.send(messageStr);
+        }
+      });
+    }
+  } catch (error) {
+    console.error("Error broadcasting to room:", error);
   }
 }
 
 function handleVoiceReady(ws, data) {
-  const { roomId, userName } = data;
-  console.log(`${userName} is ready for voice chat in room ${roomId}`);
+  try {
+    const { roomId, userName } = data;
+    console.log(`${userName} is ready for voice chat in room ${roomId}`);
 
-  const room = rooms.get(roomId);
-  if (room) {
-    const otherUsers = Array.from(room).filter((connId) => {
-      const conn = connections.get(connId);
-      return conn && conn.userName !== userName;
-    });
+    const room = rooms.get(roomId);
+    if (room) {
+      const otherUsers = Array.from(room).filter((connId) => {
+        const conn = connections.get(connId);
+        return conn && conn.userName !== userName;
+      });
 
-    console.log(
-      `Notifying ${otherUsers.length} other users about ${userName}'s voice readiness`
-    );
+      console.log(
+        `Notifying ${otherUsers.length} other users about ${userName}'s voice readiness`
+      );
 
-    otherUsers.forEach((connId) => {
-      const conn = connections.get(connId);
-      if (conn && conn.ws.readyState === WebSocket.OPEN) {
-        console.log(`Sending voice_ready notification to ${conn.userName}`);
-        conn.ws.send(
-          JSON.stringify({
-            type: "voice_ready",
-            userName: userName,
-            roomId: roomId,
-          })
-        );
-      }
-    });
+      otherUsers.forEach((connId) => {
+        const conn = connections.get(connId);
+        if (conn && conn.ws.readyState === WebSocket.OPEN) {
+          console.log(`Sending voice_ready notification to ${conn.userName}`);
+          conn.ws.send(
+            JSON.stringify({
+              type: "voice_ready",
+              userName: userName,
+              roomId: roomId,
+            })
+          );
+        }
+      });
+    }
+  } catch (error) {
+    console.error("Error handling voice ready:", error);
   }
 }
 
 function handleOffer(ws, data) {
-  const { roomId, offer, targetPeer, userName } = data;
-  console.log(
-    `Forwarding offer from ${userName} to ${targetPeer} in room ${roomId}`
-  );
+  try {
+    const { roomId, offer, targetPeer, userName } = data;
+    console.log(
+      `Forwarding offer from ${userName} to ${targetPeer} in room ${roomId}`
+    );
 
-  const room = rooms.get(roomId);
-  if (room) {
-    const targetConnection = Array.from(room).find((connId) => {
-      const conn = connections.get(connId);
-      return conn && conn.userName === targetPeer;
-    });
+    const room = rooms.get(roomId);
+    if (room) {
+      const targetConnection = Array.from(room).find((connId) => {
+        const conn = connections.get(connId);
+        return conn && conn.userName === targetPeer;
+      });
 
-    if (targetConnection) {
-      const conn = connections.get(targetConnection);
-      if (conn && conn.ws.readyState === WebSocket.OPEN) {
-        console.log(`Successfully forwarding offer to ${targetPeer}`);
-        conn.ws.send(
-          JSON.stringify({
-            type: "offer",
-            offer: offer,
-            userName: userName,
-            roomId: roomId,
-          })
-        );
+      if (targetConnection) {
+        const conn = connections.get(targetConnection);
+        if (conn && conn.ws.readyState === WebSocket.OPEN) {
+          console.log(`Successfully forwarding offer to ${targetPeer}`);
+          conn.ws.send(
+            JSON.stringify({
+              type: "offer",
+              offer: offer,
+              userName: userName,
+              roomId: roomId,
+            })
+          );
+        } else {
+          console.log(`Target user ${targetPeer} connection not open`);
+        }
       } else {
-        console.log(`Target user ${targetPeer} connection not open`);
+        console.log(`Target user ${targetPeer} not found in room ${roomId}`);
       }
-    } else {
-      console.log(`Target user ${targetPeer} not found in room ${roomId}`);
     }
+  } catch (error) {
+    console.error("Error handling offer:", error);
   }
 }
 
 function handleAnswer(ws, data) {
-  const { roomId, answer, targetPeer, userName } = data;
-  console.log(
-    `Forwarding answer from ${userName} to ${targetPeer} in room ${roomId}`
-  );
+  try {
+    const { roomId, answer, targetPeer, userName } = data;
+    console.log(
+      `Forwarding answer from ${userName} to ${targetPeer} in room ${roomId}`
+    );
 
-  const room = rooms.get(roomId);
-  if (room) {
-    const targetConnection = Array.from(room).find((connId) => {
-      const conn = connections.get(connId);
-      return conn && conn.userName === targetPeer;
-    });
+    const room = rooms.get(roomId);
+    if (room) {
+      const targetConnection = Array.from(room).find((connId) => {
+        const conn = connections.get(connId);
+        return conn && conn.userName === targetPeer;
+      });
 
-    if (targetConnection) {
-      const conn = connections.get(targetConnection);
-      if (conn && conn.ws.readyState === WebSocket.OPEN) {
-        console.log(`Successfully forwarding answer to ${targetPeer}`);
-        conn.ws.send(
-          JSON.stringify({
-            type: "answer",
-            answer: answer,
-            userName: userName,
-            roomId: roomId,
-          })
-        );
+      if (targetConnection) {
+        const conn = connections.get(targetConnection);
+        if (conn && conn.ws.readyState === WebSocket.OPEN) {
+          console.log(`Successfully forwarding answer to ${targetPeer}`);
+          conn.ws.send(
+            JSON.stringify({
+              type: "answer",
+              answer: answer,
+              userName: userName,
+              roomId: roomId,
+            })
+          );
+        }
       }
     }
+  } catch (error) {
+    console.error("Error handling answer:", error);
   }
 }
 
 function handleIceCandidate(ws, data) {
-  const { roomId, candidate, targetPeer, userName } = data;
-  console.log(`Forwarding ICE candidate from ${userName} to ${targetPeer}`);
+  try {
+    const { roomId, candidate, targetPeer, userName } = data;
+    console.log(`Forwarding ICE candidate from ${userName} to ${targetPeer}`);
 
-  const room = rooms.get(roomId);
-  if (room) {
-    const targetConnection = Array.from(room).find((connId) => {
-      const conn = connections.get(connId);
-      return conn && conn.userName === targetPeer;
-    });
+    const room = rooms.get(roomId);
+    if (room) {
+      const targetConnection = Array.from(room).find((connId) => {
+        const conn = connections.get(connId);
+        return conn && conn.userName === targetPeer;
+      });
 
-    if (targetConnection) {
-      const conn = connections.get(targetConnection);
-      if (conn && conn.ws.readyState === WebSocket.OPEN) {
-        conn.ws.send(
-          JSON.stringify({
-            type: "ice-candidate",
-            candidate: candidate,
-            userName: userName,
-            roomId: roomId,
-          })
-        );
+      if (targetConnection) {
+        const conn = connections.get(targetConnection);
+        if (conn && conn.ws.readyState === WebSocket.OPEN) {
+          conn.ws.send(
+            JSON.stringify({
+              type: "ice-candidate",
+              candidate: candidate,
+              userName: userName,
+              roomId: roomId,
+            })
+          );
+        }
       }
     }
+  } catch (error) {
+    console.error("Error handling ICE candidate:", error);
   }
 }
 
 function handleRecordingStarted(ws, data) {
-  const { roomId, userName, startTime } = data;
+  try {
+    const { roomId, userName, startTime } = data;
 
-  if (!roomRecordings.has(roomId)) {
-    const recordingData = {
-      roomId,
-      startTime,
-      participants: new Map(),
-      isRecording: true,
-      isCombining: false,
-      recordingPath: path.join(recordingsDir, `room_${roomId}_${Date.now()}`),
-    };
+    if (!roomRecordings.has(roomId)) {
+      const recordingData = {
+        roomId,
+        startTime,
+        participants: new Map(),
+        isRecording: true,
+        isCombining: false,
+        recordingPath: path.join(recordingsDir, `room_${roomId}_${Date.now()}`),
+      };
 
-    // Create directory for this room's recording
-    if (!fs.existsSync(recordingData.recordingPath)) {
-      fs.mkdirSync(recordingData.recordingPath, { recursive: true });
+      if (!fs.existsSync(recordingData.recordingPath)) {
+        fs.mkdirSync(recordingData.recordingPath, { recursive: true });
+      }
+
+      roomRecordings.set(roomId, recordingData);
+      console.log(`Started recording for room ${roomId}`);
     }
 
-    roomRecordings.set(roomId, recordingData);
-    console.log(`Started recording for room ${roomId}`);
-  }
+    const recording = roomRecordings.get(roomId);
+    if (!recording.participants.has(userName)) {
+      const userDir = path.join(recording.recordingPath, userName);
+      if (!fs.existsSync(userDir)) {
+        fs.mkdirSync(userDir, { recursive: true });
+      }
 
-  const recording = roomRecordings.get(roomId);
-  if (!recording.participants.has(userName)) {
-    // Create user-specific directory
-    const userDir = path.join(recording.recordingPath, userName);
-    if (!fs.existsSync(userDir)) {
-      fs.mkdirSync(userDir, { recursive: true });
+      const tempWebmPath = path.join(userDir, `temp_${Date.now()}.webm`);
+      const finalMp3Path = path.join(userDir, `recording_${Date.now()}.mp3`);
+
+      recording.participants.set(userName, {
+        userName,
+        audioChunks: [],
+        tempWebmPath,
+        finalMp3Path,
+        fileStream: fs.createWriteStream(tempWebmPath),
+        startTime,
+        userDir,
+      });
+      console.log(`Added ${userName} to recording session`);
     }
-
-    // Create temporary WebM file for collecting audio chunks
-    const tempWebmPath = path.join(userDir, `temp_${Date.now()}.webm`);
-    const finalMp3Path = path.join(userDir, `recording_${Date.now()}.mp3`);
-
-    recording.participants.set(userName, {
-      userName,
-      audioChunks: [],
-      tempWebmPath,
-      finalMp3Path,
-      fileStream: fs.createWriteStream(tempWebmPath),
-      startTime,
-      userDir,
-    });
-    console.log(`Added ${userName} to recording session`);
+  } catch (error) {
+    console.error("Error handling recording started:", error);
   }
 }
 
 async function handleRecordingStopped(ws, data) {
-  const { roomId, userName, roomNumberId } = data;
-  console.log(`Recording stopped for user ${userName} in room ${roomId}`);
+  try {
+    const { roomId, userName, roomNumberId } = data;
+    console.log(`Recording stopped for user ${userName} in room ${roomId}`);
 
-  if (roomRecordings.has(roomId)) {
-    const recording = roomRecordings.get(roomId);
-    const participant = recording.participants.get(userName);
+    if (roomRecordings.has(roomId)) {
+      const recording = roomRecordings.get(roomId);
+      const participant = recording.participants.get(userName);
 
-    if (participant && participant.fileStream) {
-      // Close the file stream
-      participant.fileStream.end();
-      participant.fileStream = null; // Mark as stopped
-      console.log(`Closed file stream for ${userName} in room ${roomId}`);
+      if (participant && participant.fileStream) {
+        participant.fileStream.end();
+        participant.fileStream = null;
+        console.log(`Closed file stream for ${userName} in room ${roomId}`);
 
-      // Convert WebM to MP3
-      ffmpeg(participant.tempWebmPath)
-        .toFormat("mp3")
-        .audioBitrate("192k")
-        .on("end", async () => {
-          console.log(`Converted recording to MP3 for ${userName}`);
+        ffmpeg(participant.tempWebmPath)
+          .toFormat("mp3")
+          .audioBitrate("192k")
+          .on("end", async () => {
+            console.log(`Converted recording to MP3 for ${userName}`);
 
-          // Delete the temporary WebM file
-          fs.unlink(participant.tempWebmPath, (err) => {
-            if (err)
-              console.error(`Error deleting temp file for ${userName}:`, err);
-          });
-
-          // Create metadata file
-          const metadata = {
-            userName,
-            startTime: participant.startTime,
-            endTime: Date.now(),
-            duration: Date.now() - participant.startTime,
-            filePath: participant.finalMp3Path,
-          };
-
-          const metadataPath = path.join(participant.userDir, "metadata.json");
-          fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-
-          // Check if all participants have finished processing
-          const allProcessed = Array.from(
-            recording.participants.values()
-          ).every((p) => {
-            return !p.fileStream && fs.existsSync(p.finalMp3Path);
-          });
-
-          if (allProcessed) {
-            // Notify room participants that recordings are ready
-            await combineRecordings(roomId, roomNumberId, recording);
-
-            broadcastToRoom(roomId, {
-              type: "recordings_ready",
-              roomId,
-              message: "Individual recordings are ready for download",
-              recordings: Array.from(recording.participants.values()).map(
-                (p) => ({
-                  userName: p.userName,
-                  downloadUrl: `/download/${path.relative(
-                    recordingsDir,
-                    p.finalMp3Path
-                  )}`,
-                  startTime: p.startTime,
-                  duration: Date.now() - p.startTime,
-                })
-              ),
-              timestamp: new Date().toISOString(),
+            fs.unlink(participant.tempWebmPath, (err) => {
+              if (err)
+                console.error(`Error deleting temp file for ${userName}:`, err);
             });
 
-            // Clean up recording data
-            roomRecordings.delete(roomId);
-          }
-        })
-        .on("error", (err) => {
-          console.error(`Error converting recording for ${userName}:`, err);
-        })
-        .save(participant.finalMp3Path);
+            const metadata = {
+              userName,
+              startTime: participant.startTime,
+              endTime: Date.now(),
+              duration: Date.now() - participant.startTime,
+              filePath: participant.finalMp3Path,
+            };
+
+            const metadataPath = path.join(
+              participant.userDir,
+              "metadata.json"
+            );
+            fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+
+            const allProcessed = Array.from(
+              recording.participants.values()
+            ).every((p) => {
+              return !p.fileStream && fs.existsSync(p.finalMp3Path);
+            });
+
+            if (allProcessed) {
+              await combineRecordings(roomId, roomNumberId, recording);
+
+              broadcastToRoom(roomId, {
+                type: "recordings_ready",
+                roomId,
+                message: "Individual recordings are ready for download",
+                recordings: Array.from(recording.participants.values()).map(
+                  (p) => ({
+                    userName: p.userName,
+                    downloadUrl: `/download/${path.relative(
+                      recordingsDir,
+                      p.finalMp3Path
+                    )}`,
+                    startTime: p.startTime,
+                    duration: Date.now() - p.startTime,
+                  })
+                ),
+                timestamp: new Date().toISOString(),
+              });
+
+              roomRecordings.delete(roomId);
+            }
+          })
+          .on("error", (err) => {
+            console.error(`Error converting recording for ${userName}:`, err);
+          })
+          .save(participant.finalMp3Path);
+      }
+    } else {
+      console.log(`No recording found for room ${roomId}`);
     }
-  } else {
-    console.log(`No recording found for room ${roomId}`);
+  } catch (error) {
+    console.error("Error handling recording stopped:", error);
   }
 }
 
 function handleAudioChunk(ws, data) {
-  const { roomId, userName, audioData, timestamp } = data;
-  const recording = roomRecordings.get(roomId);
+  try {
+    const { roomId, userName, audioData, timestamp } = data;
+    const recording = roomRecordings.get(roomId);
 
-  if (
-    recording &&
-    recording.isRecording &&
-    recording.participants.has(userName)
-  ) {
-    const participant = recording.participants.get(userName);
+    if (
+      recording &&
+      recording.isRecording &&
+      recording.participants.has(userName)
+    ) {
+      const participant = recording.participants.get(userName);
 
-    try {
-      // Convert base64 audio data back to buffer
-      const base64Data = audioData.split(",")[1];
-      if (!base64Data) {
-        console.error("Invalid audio data format for user:", userName);
-        return;
+      try {
+        const base64Data = audioData.split(",")[1];
+        if (!base64Data) {
+          console.error("Invalid audio data format for user:", userName);
+          return;
+        }
+
+        const audioBuffer = Buffer.from(base64Data, "base64");
+
+        if (participant.fileStream) {
+          participant.fileStream.write(audioBuffer);
+          console.log(
+            `Received audio chunk from ${userName}, size: ${audioBuffer.length} bytes`
+          );
+        } else {
+          console.log(`No file stream available for ${userName}`);
+        }
+      } catch (error) {
+        console.error(`Error processing audio chunk from ${userName}:`, error);
       }
-
-      const audioBuffer = Buffer.from(base64Data, "base64");
-
-      // Write to file stream
-      if (participant.fileStream) {
-        participant.fileStream.write(audioBuffer);
-        console.log(
-          `Received audio chunk from ${userName}, size: ${audioBuffer.length} bytes`
-        );
-      } else {
-        console.log(`No file stream available for ${userName}`);
-      }
-    } catch (error) {
-      console.error(`Error processing audio chunk from ${userName}:`, error);
+    } else {
+      console.log(`No active recording for room ${roomId} or user ${userName}`);
     }
-  } else {
-    console.log(`No active recording for room ${roomId} or user ${userName}`);
+  } catch (error) {
+    console.error("Error handling recording audio chunks:", error);
   }
 }
 
-// Import the alignAndMergeAudios function at the top of your server.js file
-
 async function combineRecordings(roomId, roomNumberId, recording) {
-  console.log(`Starting to combine recordings for room ${roomId}`);
-  if (recording.isCombining) {
-    console.log(`⚠️ Skipping duplicate combine for room ${roomId}`);
-    return;
-  }
-  recording.isCombining = true;
-
-  const roomDbId = roomDbIds.get(roomId);
-  console.log(roomNumberId);
-  let totalDuration = null;
-
-  // if (roomDbId) {
-  //   const participantCount = recording.participants.size;
-  //   recordingEntry = await recordingQueries.createRecording(
-  //     roomDbId,
-  //     new Date(recording.startTime),
-  //     participantCount
-  //   );
-  // }
-
-  // Get all participants with valid audio files
-  const participantList = [];
-  recording.participants.forEach((participant, userName) => {
-    if (fs.existsSync(participant.finalMp3Path)) {
-      const stats = fs.statSync(participant.finalMp3Path);
-      if (stats.size > 0) {
-        participantList.push({
-          userName,
-          filePath: participant.finalMp3Path,
-          startTime: participant.startTime,
-        });
-        console.log(
-          `Found audio file for ${userName}: ${
-            stats.size
-          } bytes, started at ${new Date(
-            participant.startTime
-          ).toLocaleTimeString()}`
-        );
-      } else {
-        console.log(`Empty audio file for ${userName}`);
-      }
-    } else {
-      console.log(`No audio file found for ${userName}`);
+  try {
+    console.log(`Starting to combine recordings for room ${roomId}`);
+    if (recording.isCombining) {
+      console.log(`Skipping duplicate combine for room ${roomId}`);
+      return;
     }
-  });
+    recording.isCombining = true;
 
-  if (participantList.length === 0) {
-    console.log(`No valid audio files found for room ${roomId}`);
-    roomRecordings.delete(roomId);
-    return;
-  }
+    const roomDbId = roomDbIds.get(roomId);
+    console.log(roomNumberId);
+    let totalDuration = null;
 
-  if (participantList.length === 1) {
-    // Only one participant, just copy their file
-    const singleParticipant = participantList[0];
-    const outputPath = path.join(
-      recording.recordingPath,
-      `room_${roomId}_combined.mp3`
-    );
+    // if (roomDbId) {
+    //   const participantCount = recording.participants.size;
+    //   recordingEntry = await recordingQueries.createRecording(
+    //     roomDbId,
+    //     new Date(recording.startTime),
+    //     participantCount
+    //   );
+    // }
+    const participantList = [];
+    recording.participants.forEach((participant, userName) => {
+      if (fs.existsSync(participant.finalMp3Path)) {
+        const stats = fs.statSync(participant.finalMp3Path);
+        if (stats.size > 0) {
+          participantList.push({
+            userName,
+            filePath: participant.finalMp3Path,
+            startTime: participant.startTime,
+          });
+          console.log(
+            `Found audio file for ${userName}: ${
+              stats.size
+            } bytes, started at ${new Date(
+              participant.startTime
+            ).toLocaleTimeString()}`
+          );
+        } else {
+          console.log(`Empty audio file for ${userName}`);
+        }
+      } else {
+        console.log(`No audio file found for ${userName}`);
+      }
+    });
+
+    if (participantList.length === 0) {
+      console.log(`No valid audio files found for room ${roomId}`);
+      roomRecordings.delete(roomId);
+      return;
+    }
+
+    if (participantList.length === 1) {
+      const singleParticipant = participantList[0];
+      const outputPath = path.join(
+        recording.recordingPath,
+        `room_${roomId}_combined.mp3`
+      );
+
+      try {
+        fs.copyFileSync(singleParticipant.filePath, outputPath);
+        console.log(`Single participant recording copied to: ${outputPath}`);
+
+        fs.unlinkSync(singleParticipant.filePath);
+
+        const supabaseUrl = await uploadRecordingToSupabase(outputPath, roomId);
+        const stats = fs.existsSync(outputPath)
+          ? fs.statSync(outputPath)
+          : null;
+        const fileSize = stats ? stats.size : 0;
+
+        fs.unlinkSync(outputPath);
+        console.log(`Local file deleted after Supabase upload: ${outputPath}`);
+
+        if (roomNumberId) {
+          const endTime = new Date();
+          const duration = endTime.getTime() - recording.startTime;
+          const totalSeconds = Math.floor(duration / 1000);
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = totalSeconds % 60;
+
+          const durationString = `${minutes} min ${seconds} sec`;
+          console.log(
+            "testing" +
+              " " +
+              roomNumberId +
+              " " +
+              supabaseUrl +
+              " " +
+              durationString
+          );
+
+          await recordingQueries.updateRecording(
+            roomNumberId,
+            supabaseUrl,
+            durationString
+          );
+        }
+
+        broadcastToRoom(roomId, {
+          type: "recording_ready",
+          roomId,
+          message: "Recording is ready for download",
+          downloadUrl: supabaseUrl,
+          timestamp: new Date().toISOString(),
+        });
+
+        roomRecordings.delete(roomId);
+      } catch (error) {
+        console.error(`Error copying single participant recording:`, error);
+        broadcastToRoom(roomId, {
+          type: "recording_error",
+          roomId,
+          message: "Error processing recording: " + error.message,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
+    console.log(`Found ${participantList.length} audio files to combine`);
 
     try {
-      fs.copyFileSync(singleParticipant.filePath, outputPath);
-      console.log(`Single participant recording copied to: ${outputPath}`);
+      participantList.sort((a, b) => a.startTime - b.startTime);
 
-      // Clean up individual file
-      fs.unlinkSync(singleParticipant.filePath);
+      let currentCombined = null;
+      let outputPath = null;
 
-      const supabaseUrl = await uploadRecordingToSupabase(outputPath, roomId);
-      const stats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
-      const fileSize = stats ? stats.size : 0;
+      for (let i = 0; i < participantList.length - 1; i++) {
+        const participant1 = participantList[i];
+        const participant2 = participantList[i + 1];
 
-      fs.unlinkSync(outputPath);
-      console.log(`Local file deleted after Supabase upload: ${outputPath}`);
+        const timestamp1 = new Date(participant1.startTime).toLocaleTimeString(
+          "en-US",
+          {
+            hour12: true,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }
+        );
 
-      if (roomNumberId) {
-        const endTime = new Date();
-        const duration = endTime.getTime() - recording.startTime;
-        const totalSeconds = Math.floor(duration / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
+        const timestamp2 = new Date(participant2.startTime).toLocaleTimeString(
+          "en-US",
+          {
+            hour12: true,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }
+        );
 
-        const durationString = `${minutes} min ${seconds} sec`;
+        const audio1Path = currentCombined || participant1.filePath;
+        const audio2Path = participant2.filePath;
+        outputPath = path.join(
+          recording.recordingPath,
+          `temp_combined_${i + 1}.mp3`
+        );
+
         console.log(
-          "testing" +
-            " " +
-            roomNumberId +
-            " " +
-            supabaseUrl +
-            " " +
-            durationString
+          `Combining ${
+            i === 0 ? participant1.userName : "previous combination"
+          } (${timestamp1}) with ${participant2.userName} (${timestamp2})`
         );
 
-        await recordingQueries.updateRecording(
-          roomNumberId,
-          supabaseUrl,
-          durationString
+        totalDuration = await alignAndMergeAudios(
+          audio1Path,
+          timestamp1,
+          audio2Path,
+          timestamp2,
+          outputPath
         );
+
+        console.log(`Successfully combined audio files, output: ${outputPath}`);
+
+        if (currentCombined && fs.existsSync(currentCombined)) {
+          fs.unlinkSync(currentCombined);
+          console.log(`Cleaned up temporary file: ${currentCombined}`);
+        }
+
+        currentCombined = outputPath;
       }
 
-      // Notify room participants
-      broadcastToRoom(roomId, {
-        type: "recording_ready",
-        roomId,
-        message: "Recording is ready for download",
-        downloadUrl: supabaseUrl,
-        timestamp: new Date().toISOString(),
-      });
+      const finalOutputPath = path.join(
+        recording.recordingPath,
+        `room_${roomId}_combined.mp3`
+      );
+      if (currentCombined && currentCombined !== finalOutputPath) {
+        fs.renameSync(currentCombined, finalOutputPath);
+        console.log(`Final combined recording saved as: ${finalOutputPath}`);
+      }
+
+      if (fs.existsSync(finalOutputPath)) {
+        const stats = fs.statSync(finalOutputPath);
+        console.log(`Combined file size: ${stats.size} bytes`);
+
+        if (stats.size > 0) {
+          try {
+            console.log(`Uploading combined recording to Supabase...`);
+            const supabaseUrl = await uploadRecordingToSupabase(
+              finalOutputPath,
+              roomId
+            );
+            console.log(`Successfully uploaded to Supabase: ${supabaseUrl}`);
+            const fileSize = stats.size;
+
+            fs.unlinkSync(finalOutputPath);
+            console.log(
+              `Local combined file deleted after Supabase upload: ${finalOutputPath}`
+            );
+            if (roomNumberId) {
+              console.log(
+                "testing" +
+                  " " +
+                  roomNumberId +
+                  " " +
+                  supabaseUrl +
+                  " " +
+                  totalDuration
+              );
+              if (totalDuration != null) {
+                console.log("ok");
+                await recordingQueries.updateRecording(
+                  roomNumberId,
+                  supabaseUrl,
+                  totalDuration.toString()
+                );
+              }
+            }
+
+            participantList.forEach((participant) => {
+              try {
+                if (fs.existsSync(participant.filePath)) {
+                  fs.unlinkSync(participant.filePath);
+                  console.log(`Cleaned up: ${participant.filePath}`);
+                }
+              } catch (error) {
+                console.error(
+                  `Error cleaning up ${participant.filePath}:`,
+                  error
+                );
+              }
+            });
+
+            try {
+              const recordingDir = recording.recordingPath;
+              const remainingFiles = fs.readdirSync(recordingDir);
+              if (remainingFiles.length === 0) {
+                fs.rmdirSync(recordingDir);
+                console.log(
+                  `Cleaned up empty recording directory: ${recordingDir}`
+                );
+              }
+            } catch (error) {
+              console.error(`Error cleaning up recording directory:`, error);
+            }
+
+            broadcastToRoom(roomId, {
+              type: "recording_ready",
+              roomId,
+              message: "Recording is ready for download",
+              downloadUrl: supabaseUrl,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (uploadError) {
+            console.error(`Error uploading to Supabase:`, uploadError);
+
+            broadcastToRoom(roomId, {
+              type: "recording_ready",
+              roomId,
+              message: "Recording is ready for download (local fallback)",
+              downloadUrl: `/download/${path.basename(finalOutputPath)}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else {
+          console.error("Combined file is empty");
+          broadcastToRoom(roomId, {
+            type: "recording_error",
+            roomId,
+            message: "Error: Combined recording is empty",
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } else {
+        console.error("Combined file was not created");
+        broadcastToRoom(roomId, {
+          type: "recording_error",
+          roomId,
+          message: "Error: Failed to create combined recording",
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       roomRecordings.delete(roomId);
     } catch (error) {
-      console.error(`Error copying single participant recording:`, error);
+      console.error(`Error combining audio files for room ${roomId}:`, error);
+
       broadcastToRoom(roomId, {
         type: "recording_error",
         roomId,
         message: "Error processing recording: " + error.message,
         timestamp: new Date().toISOString(),
       });
+
+      roomRecordings.delete(roomId);
     }
-    return;
-  }
-
-  console.log(`Found ${participantList.length} audio files to combine`);
-
-  try {
-    // Sort participants by start time
-    participantList.sort((a, b) => a.startTime - b.startTime);
-
-    // Start with the first two participants
-    let currentCombined = null;
-    let outputPath = null;
-
-    for (let i = 0; i < participantList.length - 1; i++) {
-      const participant1 = participantList[i];
-      const participant2 = participantList[i + 1];
-
-      // Convert timestamps to readable format (HH:MM:SS AM/PM)
-      const timestamp1 = new Date(participant1.startTime).toLocaleTimeString(
-        "en-US",
-        {
-          hour12: true,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }
-      );
-
-      const timestamp2 = new Date(participant2.startTime).toLocaleTimeString(
-        "en-US",
-        {
-          hour12: true,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }
-      );
-
-      // Define paths for this combination
-      const audio1Path = currentCombined || participant1.filePath;
-      const audio2Path = participant2.filePath;
-      outputPath = path.join(
-        recording.recordingPath,
-        `temp_combined_${i + 1}.mp3`
-      );
-
-      console.log(
-        `Combining ${
-          i === 0 ? participant1.userName : "previous combination"
-        } (${timestamp1}) with ${participant2.userName} (${timestamp2})`
-      );
-
-      // Use your alignAndMergeAudios function
-      totalDuration = await alignAndMergeAudios(
-        audio1Path,
-        timestamp1,
-        audio2Path,
-        timestamp2,
-        outputPath
-      );
-
-      console.log(`Successfully combined audio files, output: ${outputPath}`);
-
-      // Clean up the previous temporary combined file (but not original participant files yet)
-      if (currentCombined && fs.existsSync(currentCombined)) {
-        fs.unlinkSync(currentCombined);
-        console.log(`Cleaned up temporary file: ${currentCombined}`);
-      }
-
-      currentCombined = outputPath;
-    }
-
-    // Rename the final combined file
-    const finalOutputPath = path.join(
-      recording.recordingPath,
-      `room_${roomId}_combined.mp3`
-    );
-    if (currentCombined && currentCombined !== finalOutputPath) {
-      fs.renameSync(currentCombined, finalOutputPath);
-      console.log(`Final combined recording saved as: ${finalOutputPath}`);
-    }
-
-    // Verify the output file exists and has content
-    if (fs.existsSync(finalOutputPath)) {
-      const stats = fs.statSync(finalOutputPath);
-      console.log(`Combined file size: ${stats.size} bytes`);
-
-      if (stats.size > 0) {
-        try {
-          console.log(`Uploading combined recording to Supabase...`);
-          const supabaseUrl = await uploadRecordingToSupabase(
-            finalOutputPath,
-            roomId
-          );
-          console.log(`Successfully uploaded to Supabase: ${supabaseUrl}`);
-          const fileSize = stats.size;
-
-          fs.unlinkSync(finalOutputPath);
-          console.log(
-            `Local combined file deleted after Supabase upload: ${finalOutputPath}`
-          );
-          if (roomNumberId) {
-            console.log(
-              "testing" +
-                " " +
-                roomNumberId +
-                " " +
-                supabaseUrl +
-                " " +
-                totalDuration
-            );
-            if (totalDuration != null) {
-              console.log("ok");
-              await recordingQueries.updateRecording(
-                roomNumberId,
-                supabaseUrl,
-                totalDuration.toString()
-              );
-            }
-          }
-
-          // Clean up individual participant files
-          participantList.forEach((participant) => {
-            try {
-              if (fs.existsSync(participant.filePath)) {
-                fs.unlinkSync(participant.filePath);
-                console.log(`Cleaned up: ${participant.filePath}`);
-              }
-            } catch (error) {
-              console.error(
-                `Error cleaning up ${participant.filePath}:`,
-                error
-              );
-            }
-          });
-
-          try {
-            const recordingDir = recording.recordingPath;
-            const remainingFiles = fs.readdirSync(recordingDir);
-            if (remainingFiles.length === 0) {
-              fs.rmdirSync(recordingDir);
-              console.log(
-                `Cleaned up empty recording directory: ${recordingDir}`
-              );
-            }
-          } catch (error) {
-            console.error(`Error cleaning up recording directory:`, error);
-          }
-
-          // Notify room participants
-          broadcastToRoom(roomId, {
-            type: "recording_ready",
-            roomId,
-            message: "Recording is ready for download",
-            downloadUrl: supabaseUrl,
-            timestamp: new Date().toISOString(),
-          });
-        } catch (uploadError) {
-          console.error(`Error uploading to Supabase:`, uploadError);
-
-          broadcastToRoom(roomId, {
-            type: "recording_ready",
-            roomId,
-            message: "Recording is ready for download (local fallback)",
-            downloadUrl: `/download/${path.basename(finalOutputPath)}`,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } else {
-        console.error("Combined file is empty");
-        broadcastToRoom(roomId, {
-          type: "recording_error",
-          roomId,
-          message: "Error: Combined recording is empty",
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } else {
-      console.error("Combined file was not created");
-      broadcastToRoom(roomId, {
-        type: "recording_error",
-        roomId,
-        message: "Error: Failed to create combined recording",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    // Clean up recording data
-    roomRecordings.delete(roomId);
   } catch (error) {
-    console.error(`Error combining audio files for room ${roomId}:`, error);
-
-    // Notify room participants of error
-    broadcastToRoom(roomId, {
-      type: "recording_error",
-      roomId,
-      message: "Error processing recording: " + error.message,
-      timestamp: new Date().toISOString(),
-    });
-
-    roomRecordings.delete(roomId);
+    console.error("Error Combining Audios:", error);
   }
 }
 
-// Add HTTP route for downloading recordings
 server.on("request", (req, res) => {
   const url = new URL(req.url, `https://${req.headers.host}`);
 
