@@ -7,15 +7,20 @@ const { v4: uuidv4 } = require("uuid");
 const { alignAndMergeAudios } = require("./index.cjs");
 const { uploadRecordingToSupabase } = require("./uploadFile");
 const { updateRecording } = require("./db/queries.js");
-let options;
-try {
-  options = {
-    key: fs.readFileSync("./certificates/localhost-key.pem"),
-    cert: fs.readFileSync("./certificates/localhost.pem"),
-  };
-} catch (error) {
-  console.error("Error loading SSL certificates:", error);
-  process.exit(1);
+let options = null;
+let useSSL = false;
+const http = require("http");
+
+if (process.env.NODE_ENV === "development") {
+  try {
+    options = {
+      key: fs.readFileSync("./certificates/localhost-key.pem"),
+      cert: fs.readFileSync("./certificates/localhost.pem"),
+    };
+    useSSL = true;
+  } catch (error) {
+    console.log("SSL certificates not found, running without SSL");
+  }
 }
 const {
   roomQueries,
@@ -26,7 +31,9 @@ const {
 
 const roomDbIds = new Map();
 
-const server = https.createServer(options);
+const server = useSSL
+  ? https.createServer(options)
+  : require("http").createServer();
 const wss = new WebSocket.Server({
   server,
   verifyClient: (info, done) => {
@@ -1253,8 +1260,8 @@ server.listen(PORT, HOST, () => {
   });
 
   console.log("Server accessible at:");
-  console.log(`- wss://localhost:${PORT}`);
+  console.log(`- ${useSSL ? "wss" : "ws"}://localhost:${PORT}`);
   localIPs.forEach((ip) => {
-    console.log(`- wss://${ip}:${PORT}`);
+    console.log(`- ${useSSL ? "wss" : "ws"}://${ip}:${PORT}`);
   });
 });
