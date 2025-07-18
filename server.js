@@ -9,7 +9,6 @@ const { uploadRecordingToSupabase } = require("./uploadFile");
 const { updateRecording } = require("./db/queries.js");
 // Replace the SSL certificate loading section with:
 let options = null;
-let useSSL = false;
 
 if (process.env.NODE_ENV === "development") {
   try {
@@ -17,7 +16,6 @@ if (process.env.NODE_ENV === "development") {
       key: fs.readFileSync("./certificates/localhost-key.pem"),
       cert: fs.readFileSync("./certificates/localhost.pem"),
     };
-    useSSL = true;
   } catch (error) {
     console.log("SSL certificates not found, running without SSL");
   }
@@ -36,7 +34,7 @@ const roomDbIds = new Map();
 
 // Replace server creation with:
 const server =
-  useSSL && process.env.NODE_ENV === "development"
+  process.env.NODE_ENV === "development"
     ? https.createServer(options)
     : require("http").createServer();
 
