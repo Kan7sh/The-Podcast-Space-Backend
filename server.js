@@ -7,9 +7,9 @@ const { v4: uuidv4 } = require("uuid");
 const { alignAndMergeAudios } = require("./index.cjs");
 const { uploadRecordingToSupabase } = require("./uploadFile");
 const { updateRecording } = require("./db/queries.js");
+// Replace the SSL certificate loading section with:
 let options = null;
 let useSSL = false;
-const http = require("http");
 
 if (process.env.NODE_ENV === "development") {
   try {
@@ -22,6 +22,9 @@ if (process.env.NODE_ENV === "development") {
     console.log("SSL certificates not found, running without SSL");
   }
 }
+
+// For production, we'll use a load balancer for SSL termination
+// so the server runs on HTTP internally
 const {
   roomQueries,
   recordingQueries,
@@ -31,9 +34,12 @@ const {
 
 const roomDbIds = new Map();
 
-const server = useSSL
-  ? https.createServer(options)
-  : require("http").createServer();
+// Replace server creation with:
+const server =
+  useSSL && process.env.NODE_ENV === "development"
+    ? https.createServer(options)
+    : require("http").createServer();
+
 const wss = new WebSocket.Server({
   server,
   verifyClient: (info, done) => {
@@ -1202,6 +1208,19 @@ async function combineRecordings(roomId, roomNumberId, recording) {
 server.on("request", (req, res) => {
   const url = new URL(req.url, `https://${req.headers.host}`);
 
+  if (url.pathname === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+      })
+    );
+    return;
+  }
+
   if (url.pathname.startsWith("/download/")) {
     const filename = path.basename(url.pathname);
     const filePath = path.join(recordingsDir, filename);
@@ -1245,23 +1264,11 @@ const PORT = process.env.PORT || 3005;
 const HOST = "0.0.0.0";
 
 server.listen(PORT, HOST, () => {
-  console.log(`WebSocket server is running on wss://${HOST}:${PORT}`);
-
-  const os = require("os");
-  const networkInterfaces = os.networkInterfaces();
-  const localIPs = [];
-
-  Object.keys(networkInterfaces).forEach((interfaceName) => {
-    networkInterfaces[interfaceName].forEach((interface) => {
-      if (interface.family === "IPv4" && !interface.internal) {
-        localIPs.push(interface.address);
-      }
-    });
-  });
-
-  console.log("Server accessible at:");
-  console.log(`- ${useSSL ? "wss" : "ws"}://localhost:${PORT}`);
-  localIPs.forEach((ip) => {
-    console.log(`- ${useSSL ? "wss" : "ws"}://${ip}:${PORT}`);
-  });
+  console.log(`WebSocket server is running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV}`);
+  console.log(
+    `Server accessible at: ${
+      process.env.NODE_ENV === "production" ? "wss" : "ws"
+    }://${HOST}:${PORT}`
+  );
 });

@@ -1,8 +1,8 @@
 FROM node:18-alpine
 
-RUN apk add --no-cache ffmpeg
-
 WORKDIR /app
+
+RUN apk add --no-cache ffmpeg
 
 COPY package*.json ./
 
@@ -10,8 +10,8 @@ RUN npm ci --only=production
 
 COPY . .
 
-RUN mkdir -p recordings 
-
 EXPOSE 3005
+
+RUN mkdir -p recordings
 
 CMD ["node", "server.js"]
