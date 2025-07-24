@@ -5,7 +5,7 @@ const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 const { v4: uuidv4 } = require("uuid");
 const { alignAndMergeAudios } = require("./index.cjs");
-const { uploadRecordingToSupabase } = require("./uploadFile");
+const { uploadRecordingToSupabase } = require("./uploadFile.js");
 const { updateRecording } = require("./db/queries.js");
 // Replace the SSL certificate loading section with:
 let options = null;
@@ -18,6 +18,17 @@ if (process.env.NODE_ENV === "development") {
     };
   } catch (error) {
     console.log("SSL certificates not found, running without SSL");
+  }
+} else if (process.env.NODE_ENV === "production") {
+  // Use Let's Encrypt certificates for production
+  try {
+    options = {
+      key: fs.readFileSync("/opt/ssl/privkey.pem"),
+      cert: fs.readFileSync("/opt/ssl/fullchain.pem"),
+    };
+    console.log("✅ Let's Encrypt SSL certificates loaded");
+  } catch (error) {
+    console.log("❌ Let's Encrypt certificates not found:", error.message);
   }
 }
 
@@ -33,10 +44,9 @@ const {
 const roomDbIds = new Map();
 
 // Replace server creation with:
-const server =
-  process.env.NODE_ENV === "development"
-    ? https.createServer(options)
-    : require("http").createServer();
+const server = options
+  ? require("https").createServer(options)
+  : require("http").createServer();
 
 const wss = new WebSocket.Server({
   server,
@@ -1260,13 +1270,15 @@ server.on("request", (req, res) => {
 
 const PORT = process.env.PORT || 3005;
 const HOST = "0.0.0.0";
+const ENVIRONMENT = process.env.NODE_ENV || "production";
 
 server.listen(PORT, HOST, () => {
+  const protocol = options ? "wss" : "ws";
+  const httpsProtocol = options ? "https" : "http";
+
   console.log(`WebSocket server is running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV}`);
-  console.log(
-    `Server accessible at: ${
-      process.env.NODE_ENV === "production" ? "wss" : "ws"
-    }://${HOST}:${PORT}`
-  );
+  console.log(`WebSocket URL: ${protocol}://${HOST}:${PORT}`);
+  console.log(`Health check: ${httpsProtocol}://${HOST}:${PORT}/health`);
+  console.log(`SSL enabled: ${!!options}`);
 });

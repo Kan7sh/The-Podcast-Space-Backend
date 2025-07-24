@@ -1,13 +1,6 @@
-import {
-  pgTable,
-  serial,
-  varchar,
-  integer,
-  timestamp,
-  boolean,
-} from "drizzle-orm/pg-core";
+const { pgTable, serial, varchar, integer, timestamp, boolean } = require("drizzle-orm/pg-core");
 
-export const RoomTable = pgTable("room", {
+const RoomTable = pgTable("room", {
   id: serial().primaryKey(),
   name: varchar().notNull(),
   hostId: integer().notNull(),
@@ -19,7 +12,7 @@ export const RoomTable = pgTable("room", {
   currentParticiants: integer().default(0),
 });
 
-export const RecordingsTable = pgTable("recordings", {
+const RecordingsTable = pgTable("recordings", {
   id: serial().primaryKey(),
   recordingUrl: varchar(),
   roomId: integer()
@@ -29,3 +22,5 @@ export const RecordingsTable = pgTable("recordings", {
   recordingCreatedAt: timestamp({ withTimezone: true }),
   recordingLength: varchar(),
 });
+
+module.exports = { RoomTable, RecordingsTable };

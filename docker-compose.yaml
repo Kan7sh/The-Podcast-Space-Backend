@@ -7,6 +7,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3005
+      - DATABASE_URL=${DATABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
     restart: unless-stopped
     volumes:
       - ./recordings:/app/recordings
+    env_file:
+      - .env

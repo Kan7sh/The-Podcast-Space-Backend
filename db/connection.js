@@ -1,7 +1,9 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
-import * as schema from "./schema.js";
+const { drizzle } = require("drizzle-orm/node-postgres");
+const { Pool } = require("pg");
+const schema = require("./schema.js");
 
 const url = process.env.DATABASE_URL;
 
-export const db = drizzle(url, { schema });
+const db = drizzle(url, { schema });
+
+module.exports = { db };

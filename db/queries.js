@@ -1,8 +1,8 @@
-import { eq, sql } from "drizzle-orm";
-import { db } from "./connection.js";
-import { RoomTable, RecordingsTable } from "./schema.js";
+const { eq, sql } = require("drizzle-orm");
+const { db } = require("./connection.js");
+const { RoomTable, RecordingsTable } = require("./schema.js");
 
-export const roomQueries = {
+const roomQueries = {
   getRoomByRoomId: async (roomId) => {
     try {
       const result = await db
@@ -50,7 +50,7 @@ export const roomQueries = {
   },
 };
 
-export const recordingQueries = {
+const recordingQueries = {
   // Create recording entry
   createRecording: async (roomDbId, startTime, participantCount) => {
     try {
@@ -108,7 +108,7 @@ export const recordingQueries = {
   },
 };
 
-export async function decrementCurrentParticipants(roomId) {
+async function decrementCurrentParticipants(roomId) {
   await db
     .update(RoomTable)
     .set({
@@ -117,7 +117,7 @@ export async function decrementCurrentParticipants(roomId) {
     .where(eq(RoomTable.roomId, roomId));
 }
 
-export async function incrementCurrentParticipants(roomId) {
+async function incrementCurrentParticipants(roomId) {
   await db
     .update(RoomTable)
     .set({
@@ -125,3 +125,10 @@ export async function incrementCurrentParticipants(roomId) {
     })
     .where(eq(RoomTable.roomId, roomId));
 }
+
+module.exports = {
+  roomQueries,
+  recordingQueries,
+  decrementCurrentParticipants,
+  incrementCurrentParticipants,
+};
